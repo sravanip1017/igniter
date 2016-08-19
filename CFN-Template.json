@@ -1,0 +1,361 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "Template to create AWS-stack with VPC (public and private subnets), Elastic Load Balancer and Chef to provision LAMP webserver on the instance",
+
+  "Parameters" : {
+    
+    "KeyName" : {
+      "Description" : "Name of the existing EC2 KeyPair",
+      "Type" : "String",
+      "MinLength": "1",
+      "MaxLength": "64",
+      "AllowedPattern" : "[-_ a-zA-Z0-9]*",
+      "ConstraintDescription" : "can contain only alphanumeric characters, spaces, dashes and underscores."
+    },
+
+    "ServerAccess" : {
+      "Description" : "Allowed IP range to connect to the EC2 instances",
+      "Type" : "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default" : "0.0.0.0/0",
+      "AllowedPattern" : "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription" : "must be a valid CIDR range of the form x.x.x.x/x."
+    }
+    
+  },
+
+  "Mappings" : {
+    "SubnetConfig" : {
+      "VPC"     : { "CIDR" : "10.0.0.0/16" },
+      "Public"  : { "CIDR" : "10.0.0.0/24" },
+      "Private" : { "CIDR" : "10.0.1.0/24" }
+    },
+    "NatRegionMap" : {
+      "us-east-1"      : {"AMI" : "ami-184dc970"},
+      "us-west-2"      : {"AMI" : "ami-290f4119"},
+      "us-west-1"      : {"AMI" : "ami-0d087a6d"},
+      "eu-west-1"      : {"AMI" : "ami-14913f63"},
+      "ap-southeast-1" : {"AMI" : "ami-1a9dac48"},
+      "ap-southeast-2" : {"AMI" : "ami-162c0c75"},
+      "ap-northeast-1" : {"AMI" : "ami-03cf3903"},
+      "sa-east-1"      : {"AMI" : "ami-22169b4e"}
+    },
+	"ec2RegionMap" : {
+      "us-east-1"      : {"AMI" : "ami-a4827dc9"},
+      "us-west-2"      : {"AMI" : "ami-f303fb93"},
+      "us-west-1"      : {"AMI" : "ami-11790371"},
+      "eu-west-1"      : {"AMI" : "ami-c39604b0"},
+      "ap-southeast-1" : {"AMI" : "ami-a2c111c1"},
+      "ap-southeast-2" : {"AMI" : "ami-d9d7f9ba"},
+      "ap-northeast-1" : {"AMI" : "ami-6154bb00"},
+      "sa-east-1"      : {"AMI" : "ami-106ee57c"}
+	}
+  },
+
+  "Resources" : {
+
+    "VPC" : {
+      "Type" : "AWS::EC2::VPC",
+      "Properties" : {
+        "CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "VPC", "CIDR" ]},
+		"InstanceTenancy": "default",
+        "EnableDnsHostnames": "false",
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" },
+	  { "Key" : "Name", "Value" : "CustomVPC" }
+        ]
+      }
+    },
+
+    "PublicSubnet" : {
+      "DependsOn" : ["VPC"],
+      "Type" : "AWS::EC2::Subnet",
+      "Properties" : {
+        "VpcId" : { "Ref" : "VPC" },
+        "CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "Public", "CIDR" ]},
+		"AvailabilityZone" : { "Fn::Select" : [ "0", { "Fn::GetAZs" : "" } ] },
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" },
+	      { "Key" : "Name", "Value" : "Public Subnet" }
+        ]
+      }
+    },
+
+    "PrivateSubnet" : {
+      "DependsOn" : ["VPC"],
+      "Type" : "AWS::EC2::Subnet",
+      "Properties" : {
+        "VpcId" : { "Ref" : "VPC" },
+        "CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "Private", "CIDR" ]},
+		"AvailabilityZone" : { "Fn::Select" : [ "0", { "Fn::GetAZs" : "" } ] },
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Private" },
+	  { "Key" : "Name", "Value" : "Private Subnet" }
+        ]
+      }
+    },
+
+    "InternetGateway" : {
+      "Type" : "AWS::EC2::InternetGateway",
+      "Properties" : {
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" }
+        ]
+      }
+    },
+
+    "GatewayToInternet" : {
+       "DependsOn" : ["VPC", "InternetGateway"],
+       "Type" : "AWS::EC2::VPCGatewayAttachment",
+       "Properties" : {
+         "VpcId" : { "Ref" : "VPC" },
+         "InternetGatewayId" : { "Ref" : "InternetGateway" }
+       }
+    },
+
+    "PublicRouteTable" : {
+      "DependsOn" : ["VPC"],
+      "Type" : "AWS::EC2::RouteTable",
+      "Properties" : {
+        "VpcId" : { "Ref" : "VPC" },
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" }
+        ]
+      }
+    },
+
+    "PublicRoute" : {
+      "DependsOn" : ["PublicRouteTable", "InternetGateway"],
+      "Type" : "AWS::EC2::Route",
+      "Properties" : {
+        "RouteTableId" : { "Ref" : "PublicRouteTable" },
+        "DestinationCidrBlock" : "0.0.0.0/0",
+        "GatewayId" : { "Ref" : "InternetGateway" }
+      }
+    },
+
+    "PublicSubnetRouteTableAssociation" : {
+      "DependsOn" : ["PublicSubnet", "PublicRouteTable"],
+      "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties" : {
+        "SubnetId" : { "Ref" : "PublicSubnet" },
+        "RouteTableId" : { "Ref" : "PublicRouteTable" }
+      }
+    },
+
+   
+    "PrivateRouteTable" : {
+      "DependsOn" : ["VPC"],
+      "Type" : "AWS::EC2::RouteTable",
+      "Properties" : {
+        "VpcId" : { "Ref" : "VPC" },
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Private" }
+        ]
+      }
+    },
+
+    "PrivateSubnetRouteTableAssociation" : {
+      "DependsOn" : ["PrivateSubnet", "PrivateRouteTable"],
+      "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties" : {
+        "SubnetId" : { "Ref" : "PrivateSubnet" },
+        "RouteTableId" : { "Ref" : "PrivateRouteTable" }
+      }
+    },
+
+    "NATSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+      "GroupDescription" : "Enable internal access to the staging NAT device",
+        "VpcId" : { "Ref" : "VPC" },
+        "SecurityGroupIngress" : [
+        { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "10.0.2.0/24"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "10.0.2.0/24"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0"} ],
+        "SecurityGroupEgress" : [
+        { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0"} ,
+		{ "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0"} ]
+      }
+    },
+
+    "NAT" : {
+      "DependsOn" : ["PublicSubnet", "NATSecurityGroup"],
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "InstanceType" : "t2.micro",
+        "KeyName"  : { "Ref" : "KeyName" },
+        "SourceDestCheck" : "false",
+        "ImageId" : { "Fn::FindInMap" : [ "NatRegionMap", { "Ref" : "AWS::Region" }, "AMI" ]},
+	    "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "NATSecurityGroup" }],
+          "AssociatePublicIpAddress" : "true",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PublicSubnet" }
+        }],
+	    "Tags" : [{ "Key" : "Name", "Value" : "NAT Instance" }]
+      }
+    },
+      
+    "PrivateRoute" : {
+      "DependsOn" : ["PrivateRouteTable", "NAT"],
+      "Type" : "AWS::EC2::Route",
+      "Properties" : {
+        "RouteTableId" : { "Ref" : "PrivateRouteTable" },
+        "DestinationCidrBlock" : "0.0.0.0/0",
+        "InstanceId" : { "Ref" : "NAT" }
+      }
+    },
+      
+	"PrivateSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+      "GroupDescription" : "Enable internal access to the staging NAT device",
+        "VpcId" : { "Ref" : "VPC" },
+        "SecurityGroupIngress" : [
+        { "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0"} ,
+		{ "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0"} ],
+        "SecurityGroupEgress" : [
+        { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0"} ]
+      }
+    },
+      
+	"WebserverInstance" : {
+      "DependsOn" : ["PrivateSubnet", "PrivateSecurityGroup"],
+      "Type" : "AWS::EC2::Instance",
+      "Properties" : {
+        "InstanceType" : "t2.micro",
+        "KeyName"  : { "Ref" : "KeyName" },
+        "ImageId" : { "Fn::FindInMap" : [ "ec2RegionMap", { "Ref" : "AWS::Region" }, "AMI" ]},
+	    "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "PrivateSecurityGroup" }],
+          "AssociatePublicIpAddress" : "false",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PrivateSubnet" }
+        }],
+		"UserData": { "Fn::Base64": { "Fn::Join": [ "", [
+		    "#!/bin/bash \n",
+			"sudo yum -y update \n",
+            
+            "sudo curl -L https://www.opscode.com/chef/install.sh | sudo bash \n",
+            
+			"sudo mkdir -p /home/ec2-user/chef/cookbooks/lamp-stack/recipes \n",
+            
+            "sudo echo '#' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '# Recipe:: default' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '#' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '# Copyright 2016, YOUR_COMPANY_NAME' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '#' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '# All rights reserved - Do Not Redistribute' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '#' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '#UPDATE' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'execute \"update\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '  command \"sudo yum update -y\"' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '  action :run' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+
+            "sudo echo '#APACHE' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'package \"httpd\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '  action :install' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+
+            "sudo echo 'service \"httpd\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '  action [:enable, :start]' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+
+            "sudo echo 'execute \"httpd\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '  command \"sudo chkconfig httpd on\"' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '  action :run' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+
+            "sudo echo '#PHP' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'package \"php\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '    action :install' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+
+            "sudo echo '#MySQL' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'package \"mysql-server\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '    action :install' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+
+            "sudo echo 'execute \"starting mysql service\" do' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '    command \"sudo service mysqld start\"' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo '    action :run' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            "sudo echo 'end' >> /home/ec2-user/chef/cookbooks/lamp/recipes/default.rb", "\n",
+            
+			"sudo echo '{' >> /home/ec2-user/chef/node.json", "\n",
+			"sudo echo '\"run_list\": [ \"recipe[lamp-stack]\" ]' >> /home/ec2-user/chef/node.json", "\n", 
+			"sudo echo '}' >> /home/ec2-user/chef/node.json", "\n",
+            
+			"sudo echo 'file_cache_path \"/home/ec2-user/chef\"' >> /home/ec2-user/chef/solo.rb", "\n",
+			"sudo echo 'cookbook_path \"/home/ec2-user/chef/cookbooks\"' >> /home/ec2-user/chef/solo.rb", "\n",
+			"sudo echo 'json_attribs \"/home/ec2-user/chef/node.json\"' >> /home/ec2-user/chef/solo.rb", "\n",
+            
+			"chef-solo -c /home/ec2-user/chef/solo.rb \n"
+		] ] } },
+			
+		"Tags" : [{ "Key" : "Name", "Value" : "WebserverInstance" }]
+	  }
+	},
+	"LoadBalancerSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable HTTP access on port 80 and 443",
+        "VpcId" : { "Ref" : "VPC" },
+        "SecurityGroupIngress" : [ 
+		{ "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0"} ],
+        "SecurityGroupEgress" : [
+        { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0"} ,
+        { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0"} ]
+      }
+    },
+      
+    "ElasticLoadBalancer" : {
+      "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties" : {
+	  "Listeners": [{
+          "InstancePort": "80",
+          "InstanceProtocol": "HTTP",
+          "LoadBalancerPort": "80",
+          "Protocol": "HTTP"
+        }],
+        "HealthCheck": {
+		  "Target": "TCP:80",
+          "HealthyThreshold": "3",
+          "Interval": "5",
+          "Timeout": "3",
+          "UnhealthyThreshold": "2"
+        },
+        "CrossZone": "true",
+        "Subnets": [ { "Ref": "PublicSubnet" } ],
+		"Instances" : [ { "Ref" : "WebserverInstance" } ],
+        "SecurityGroups": [ { "Ref": "LoadBalancerSecurityGroup" } ]
+      }
+    }
+  },
+  "Outputs" : {
+    "URL" : {
+    "Description" : "URL of the website",
+    "Value" : { "Fn::Join" : [ "", [ "http://", { "Fn::GetAtt" : [ "ElasticLoadBalancer", "DNSName" ]}]]}
+    }
+  }
+}
+
+ 
+ 
+  
